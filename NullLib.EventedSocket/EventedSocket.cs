@@ -8,21 +8,6 @@ using System.Threading;
 
 namespace NullLib.EventedSocket
 {
-    public class SocketConnectedArgs : EventArgs
-    {
-        public Socket Socket;
-    }
-    public class SocketDisconnectedArgs : EventArgs
-    {
-        public Socket Socket;
-    }
-    public class SocketReceivedDataArgs : EventArgs
-    {
-        public Socket Socket;
-        public byte[] Buffer;
-        public int Size;
-    }
-
     public static class EventedSocket
     {
         public static void SendData(Socket target, byte[] data, int offset, int length)
@@ -198,14 +183,14 @@ namespace NullLib.EventedSocket
 
     public class SocketServer
     {
-        Socket server;                                               // 用来接受连接, 接收数据, 转发数据的套接字
-        Dictionary<Socket, SocketStateObject> clientStates;                // 缓冲区
+        Socket self;                                               // 用来接受连接, 接收数据, 转发数据的套接字
+        Dictionary<Socket, SocketStateObject> clientStates;                // 客户端状态等
 
-        public bool Running
+        public bool IsBound
         {
             get
             {
-                return server.IsBound;
+                return self == null ? false : self.IsBound;
             }
         }
         public int ConnectedCount
@@ -215,17 +200,19 @@ namespace NullLib.EventedSocket
                 return clientStates.Count;
             }
         }
+        public Socket BaseSocket { get => self; }
+
         public void Start(int port, int backlog)
         {
-            server = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            self = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             clientStates = new Dictionary<Socket, SocketStateObject>();
-            server.Bind(new IPEndPoint(IPAddress.Any, port));
-            server.Listen(backlog);
-            server.BeginAccept(AcceptAction, null);
+            self.Bind(new IPEndPoint(IPAddress.Any, port));
+            self.Listen(backlog);
+            self.BeginAccept(AcceptAction, null);
         }
         public void Stop()
         {
-            server.Close();
+            self.Close();
             clientStates = null;
         }
 
@@ -272,7 +259,7 @@ namespace NullLib.EventedSocket
 
         void AcceptAction(IAsyncResult ar)
         {
-            Socket client = server.EndAccept(ar);
+            Socket client = self.EndAccept(ar);
             OnSocketConnected(client);
 
             SocketStateObject state = new SocketStateObject();
@@ -280,7 +267,7 @@ namespace NullLib.EventedSocket
             state.WorkSocket = client;
             client.BeginReceive(state.Buffer, 0, state.Buffer.Length, SocketFlags.None, ReceiveAction, state);
 
-            server.BeginAccept(AcceptAction, null);
+            self.BeginAccept(AcceptAction, null);
         }
         void ReceiveAction(IAsyncResult ar)
         {
@@ -306,8 +293,8 @@ namespace NullLib.EventedSocket
                 }
                 else
                 {
-                    state.Buffer = new byte[4];
                     OnSocketReceivedData(client, state.Buffer, size);
+                    state.Buffer = new byte[4];
                 }
 
                 if (size == 0)
@@ -335,28 +322,17 @@ namespace NullLib.EventedSocket
         {
             if (ReceivedClientData != null)
                 ReceivedClientData.Invoke(this,
-                    new SocketReceivedDataArgs
-                    {
-                        Socket = socket,
-                        Buffer = buffer,
-                        Size = size
-                    });
+                    new SocketReceivedDataArgs(socket, buffer, size));
         }
         void OnSocketDisconnected(Socket socket)
         {
             if (ClientDisconnected != null)
-                ClientDisconnected.Invoke(this, new SocketDisconnectedArgs()
-                {
-                    Socket = socket
-                });
+                ClientDisconnected.Invoke(this, new SocketDisconnectedArgs(socket));
         }
         void OnSocketConnected(Socket socket)
         {
             if (ClientConnected != null)
-                ClientConnected.Invoke(this, new SocketConnectedArgs()
-                {
-                    Socket = socket
-                });
+                ClientConnected.Invoke(this, new SocketConnectedArgs(socket));
         }
     }
     public class SocketClient
@@ -364,7 +340,7 @@ namespace NullLib.EventedSocket
         SocketStateObject socketState = new SocketStateObject();
 
         public bool Connected { get => socketState.WorkSocket != null ? socketState.WorkSocket.Connected : false; }
-        public Socket Server { get => socketState.WorkSocket; }
+        public Socket BaseSocket { get => socketState.WorkSocket; }
 
         public void ConnectTo(EndPoint address)
         {
@@ -460,8 +436,8 @@ namespace NullLib.EventedSocket
                         }
                         else
                         {
-                            socketState.Buffer = new byte[4];
                             OnSocketReceivedData(socketState.WorkSocket, socketState.Buffer, size);
+                            socketState.Buffer = new byte[4];
                         }
 
                         socketState.IsLength = !socketState.IsLength;
@@ -489,20 +465,12 @@ namespace NullLib.EventedSocket
         {
             if (ReceivedData != null)
                 ReceivedData.Invoke(this,
-                    new SocketReceivedDataArgs
-                    {
-                        Socket = socket,
-                        Buffer = buffer,
-                        Size = size
-                    });
+                    new SocketReceivedDataArgs(socket, buffer, size));
         }
         void OnSocketDisconnected(Socket socket)
         {
             if (Disconnected != null)
-                Disconnected.Invoke(this, new SocketDisconnectedArgs()
-                {
-                    Socket = socket
-                });
+                Disconnected.Invoke(this, new SocketDisconnectedArgs(socket));
         }
     }
     public class SocketStateObject
@@ -516,6 +484,35 @@ namespace NullLib.EventedSocket
             WorkSocket = null;
             IsLength = true;
             Buffer = new byte[4];
+        }
+    }
+
+    public class SocketConnectedArgs : EventArgs
+    {
+        public Socket Socket;
+        public SocketConnectedArgs(Socket socket)
+        {
+            this.Socket = socket;
+        }
+    }
+    public class SocketDisconnectedArgs : EventArgs
+    {
+        public Socket Socket;
+        public SocketDisconnectedArgs(Socket socket)
+        {
+            this.Socket = socket;
+        }
+    }
+    public class SocketReceivedDataArgs : EventArgs
+    {
+        public Socket Socket;
+        public byte[] Buffer;
+        public int Size;
+        public SocketReceivedDataArgs(Socket socket, byte[] buffer, int size)
+        {
+            this.Socket = socket;
+            this.Buffer = buffer;
+            this.Size = size;
         }
     }
 }
