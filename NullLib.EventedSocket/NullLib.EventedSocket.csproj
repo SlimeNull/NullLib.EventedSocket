@@ -2,6 +2,13 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
+    <Version>1.0.1</Version>
+    <Authors>Null</Authors>
+    <Company>无</Company>
+    <Description>事件套接字, 对TCP套接字进行封装, 加入包的长度</Description>
+    <PackageProjectUrl>https://github.com/SlimeNull/NullLib.EventedSocket</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SlimeNull/NullLib.EventedSocket</RepositoryUrl>
+    <RepositoryType>Github</RepositoryType>
   </PropertyGroup>
 
 </Project>
