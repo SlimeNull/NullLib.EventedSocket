@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Tasks;
 
 namespace NullLib.EventedSocket
 {
@@ -35,22 +36,36 @@ namespace NullLib.EventedSocket
 
         public bool IsAcceptEvented { get => continueAccept; }
 
-        private void AcceptAction(IAsyncResult result)
+        private async void EventAcceptClientLoopAsync()
         {
-            TcpClient tcpClient = server.EndAcceptTcpClient(result);
-            EventedClient newClient = new EventedClient(tcpClient);
-
-            OnClientConnected(newClient);
-
-            if (continueAccept)
+            await Task.Run(() =>
             {
-                server.BeginAcceptSocket(AcceptAction, null);
-            }
+                while (continueAccept)
+                    OnClientConnected(AcceptClient());
+            });
         }
 
         public EventedClient AcceptClient()
         {
-            return new EventedClient(server.AcceptTcpClient());
+            TcpClient tcpClient;
+
+            try
+            {
+                tcpClient = server.AcceptTcpClient();
+                return new EventedClient(tcpClient);
+            }
+            catch(InvalidOperationException ex)
+            {
+                throw new InvalidOperationException("The listener has not been started with a call to NullLib.EventedSocket.EventedListener.Start.", ex);
+            }
+            catch(SocketException ex)
+            {
+                throw ex;
+            }
+            catch(Exception ex)
+            {
+                throw ex;
+            }
         }
         public IAsyncResult BeginAcceptClient(AsyncCallback callback, object state)
         {
@@ -68,7 +83,7 @@ namespace NullLib.EventedSocket
         public void StartAcceptClient()
         {
             continueAccept = true;
-            server.BeginAcceptSocket(AcceptAction, null);
+            EventAcceptClientLoopAsync();
         }
         public void StopAcceptClient()
         {
@@ -92,15 +107,20 @@ namespace NullLib.EventedSocket
             return server.Pending();
         }
 
+        ~EventedListener()
+        {
+            continueAccept = false;
+        }
+
         private void OnClientConnected(EventedClient client)
         {
             if (ClientConnected != null)
-                ClientConnected.Invoke(this, new ClientConnectedArgs(client));
+                ClientConnected.Invoke(this, new ClientConnectedEventArgs(client));
         }
 
-        public event EventHandler<ClientConnectedArgs> ClientConnected;
+        public event EventHandler<ClientConnectedEventArgs> ClientConnected;
     }
-    public class EventedClient
+    public class EventedClient : IDisposable
     {
         TcpClient client;
         NetworkStream stream;
@@ -110,9 +130,6 @@ namespace NullLib.EventedSocket
         public EventedClient()
         {
             client = new TcpClient();
-
-            SendDataDelegate = SendData;
-            ReceiveDataDelegate = ReceiveData;
         }
         public EventedClient(TcpClient client)
         {
@@ -121,9 +138,6 @@ namespace NullLib.EventedSocket
 
             this.client = client;
             stream = client.GetStream();
-
-            SendDataDelegate = SendData;
-            ReceiveDataDelegate = ReceiveData;
         }
 
         public int ReceiveTimeout { get => client.ReceiveTimeout; set => client.ReceiveTimeout = value; }
@@ -139,24 +153,10 @@ namespace NullLib.EventedSocket
         public int SendTimeout { get => client.SendTimeout; set => client.SendTimeout = value; }
 
         public bool IsReceiveEvented { get => continueReceive; }
-        
-        private void EventReceiveCallback(IAsyncResult result)
-        {
-            byte[] data = ReceiveDataDelegate.EndInvoke(result);
-            if (data != null)
-                OnDataReceived(data, data.Length);
-
-            if (continueReceive)
-                StartReceiveData();
-        }
-        private void SetStreamAction(IAsyncResult result)
-        {
-            stream = client.GetStream();
-        }
 
         public IAsyncResult BeginConnect(IPAddress address, int port, AsyncCallback callback, object state)
         {
-            AsyncCallback connectCallback = SetStreamAction;
+            AsyncCallback connectCallback = (rst) => stream = client.GetStream();
             connectCallback += callback;
 
             return client.BeginConnect(address, port, connectCallback, state);
@@ -187,38 +187,44 @@ namespace NullLib.EventedSocket
             int size = buffer.Length;
             SendData(buffer, 0, size);
         }
-        private Action<byte[], int, int> SendDataDelegate;
+        public async void SendDataAsync(byte[] buffer, int offset, int size)
+        {
+            await Task.Run(() =>
+            {
+                SendData(buffer, offset, size);
+            });
+        }
         public IAsyncResult BeginSendData(byte[] buffer, int offset, int size, AsyncCallback callback, object state)
         {
-            return SendDataDelegate.BeginInvoke(buffer, offset, size, callback, state);
+            return stream.BeginWrite(buffer, offset, size, callback, state);
         }
         public IAsyncResult BeginSendData(byte[] buffer, int offset, AsyncCallback callback, object state)
         {
             int size = buffer.Length - offset;
-            return SendDataDelegate.BeginInvoke(buffer, offset, size, callback, state);
+            return stream.BeginWrite(buffer, offset, size, callback, state);
         }
         public IAsyncResult BeginSendData(byte[] buffer, AsyncCallback callback, object state)
         {
             int size = buffer.Length;
-            return SendDataDelegate.BeginInvoke(buffer, 0, size, callback, state);
+            return stream.BeginWrite(buffer, 0, size, callback, state);
         }
-        public IAsyncResult BeginSendData(byte[] buffer, int offset, int size)
+        public void BeginSendData(byte[] buffer, int offset, int size)
         {
-            return SendDataDelegate.BeginInvoke(buffer, offset, size, (rst) => SendDataDelegate.EndInvoke(rst), null);
+            SendDataAsync(buffer, offset, size);
         }
-        public IAsyncResult BeginSendData(byte[] buffer, int offset)
+        public void BeginSendData(byte[] buffer, int offset)
         {
             int size = buffer.Length - offset;
-            return SendDataDelegate.BeginInvoke(buffer, offset, size, (rst) => SendDataDelegate.EndInvoke(rst), null);
+            SendDataAsync(buffer, offset, size);
         }
-        public IAsyncResult BeginSendData(byte[] buffer)
+        public void BeginSendData(byte[] buffer)
         {
             int size = buffer.Length;
-            return SendDataDelegate.BeginInvoke(buffer, 0, size, (rst) => SendDataDelegate.EndInvoke(rst), null);
+            SendDataAsync(buffer, 0, size);
         }
         public void EndSendData(IAsyncResult result)
         {
-            SendDataDelegate.EndInvoke(result);
+            stream.EndWrite(result);
         }
         
         public byte[] ReceiveData()
@@ -259,17 +265,47 @@ namespace NullLib.EventedSocket
                 throw ex;
             }
         }
-        private Func<byte[]> ReceiveDataDelegate;
-        public IAsyncResult BeginReceiveData(AsyncCallback callback, object state)
+        private async Task ReceiveDataAsync(AsyncCallback callback, object state)
         {
-            return ReceiveDataDelegate.BeginInvoke(callback, state);
+            Task<byte[]> task = new Task<byte[]>((_) => ReceiveData(), state);
+            task.Start();
+            await task;
+            callback.Invoke(task);  // 好丑... 之后想办法把这里改好看一点
         }
 
+        public IAsyncResult BeginReceiveData(AsyncCallback callback, object state)
+        {
+            return ReceiveDataAsync(callback, state);
+        }
+        public byte[] EndReceiveData(IAsyncResult result)
+        {
+            if (result is Task<byte[]>)
+                return (result as Task<byte[]>).Result;
+            else
+                return null;
+        }
 
+        public void Dispose()
+        {
+            client.Dispose();
+        }
+
+        private async void ReceiveDataLoopAsync()
+        {
+            await Task.Run(()=>
+            {
+                while (continueReceive)
+                {
+                    byte[] data = ReceiveData();
+                    if (data != null)
+                        OnDataReceived(data, data.Length);
+                }
+            });
+        }
         public void StartReceiveData()
         {
             continueReceive = true;
-            ReceiveDataDelegate.BeginInvoke(EventReceiveCallback, null);
+            ReceiveDataLoopAsync();
         }
         public void StopReceiveData()
         {
@@ -278,23 +314,25 @@ namespace NullLib.EventedSocket
 
         private void OnDisconnected()
         {
+            continueReceive = false;
+
             if (Disconnected != null)
-                Disconnected.Invoke(this, new ClientDisconnectedArgs(this));
+                Disconnected.Invoke(this, new ClientDisconnectedEventArgs(this));
         }
         private void OnDataReceived(byte[] buffer, int size)
         {
             if (DataReceived != null)
-                DataReceived.Invoke(this, new ClientDataReceivedArgs(this, buffer, size));
+                DataReceived.Invoke(this, new ClientDataReceivedEventArgs(this, buffer, size));
         }
         private void OnErrorReceived(byte[] buffer, int size)
         {
             if (ErrorReceived != null)
-                ErrorReceived.Invoke(this, new ClientErrorReceivedArgs(this, buffer, size));
+                ErrorReceived.Invoke(this, new ClientErrorReceivedEventArgs(this, buffer, size));
         }
 
-        public event EventHandler<ClientDisconnectedArgs> Disconnected;
-        public event EventHandler<ClientDataReceivedArgs> DataReceived;
-        public event EventHandler<ClientErrorReceivedArgs> ErrorReceived;
+        public event EventHandler<ClientDisconnectedEventArgs> Disconnected;
+        public event EventHandler<ClientDataReceivedEventArgs> DataReceived;
+        public event EventHandler<ClientErrorReceivedEventArgs> ErrorReceived;
     }
     public class SocketStateObject
     {
@@ -310,40 +348,40 @@ namespace NullLib.EventedSocket
         }
     }
 
-    public class ClientConnectedArgs : EventArgs
+    public class ClientConnectedEventArgs : EventArgs
     {
         public EventedClient Client;
-        public ClientConnectedArgs(EventedClient client)
+        public ClientConnectedEventArgs(EventedClient client)
         {
             this.Client = client;
         }
     }
-    public class ClientDisconnectedArgs : EventArgs
+    public class ClientDisconnectedEventArgs : EventArgs
     {
         public EventedClient Client;
-        public ClientDisconnectedArgs(EventedClient client)
+        public ClientDisconnectedEventArgs(EventedClient client)
         {
             this.Client = client;
         }
     }
-    public class ClientDataReceivedArgs : EventArgs
+    public class ClientDataReceivedEventArgs : EventArgs
     {
         public EventedClient Client;
         public byte[] Buffer;
         public int Size;
-        public ClientDataReceivedArgs(EventedClient client, byte[] buffer, int size)
+        public ClientDataReceivedEventArgs(EventedClient client, byte[] buffer, int size)
         {
             this.Client = client;
             this.Buffer = buffer;
             this.Size = size;
         }
     }
-    public class ClientErrorReceivedArgs : EventArgs
+    public class ClientErrorReceivedEventArgs : EventArgs
     {
         public EventedClient Client;
         public byte[] Buffer;
         public int Size;
-        public ClientErrorReceivedArgs(EventedClient client, byte[] buffer, int size)
+        public ClientErrorReceivedEventArgs(EventedClient client, byte[] buffer, int size)
         {
             this.Client = client;
             this.Buffer = buffer;

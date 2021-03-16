@@ -25,7 +25,7 @@ namespace ClientConso
             }
         }
 
-        private static void Client_DataReceived(object sender, ClientDataReceivedArgs e)
+        private static void Client_DataReceived(object sender, ClientDataReceivedEventArgs e)
         {
             try
             {
